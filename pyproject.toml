@@ -1,0 +1,37 @@
+[project]
+name = "crawler-agent"
+version = "0.1.0"
+description = "Self-evolving web crawler agent for regulatory websites"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.31",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+    "pydantic>=2.6",
+    "sqlalchemy>=2.0",
+    "typer>=0.12",
+    "anthropic>=0.40",
+    "python-dotenv>=1.0",
+    "tenacity>=8.2",
+    "pyyaml>=6.0",
+    "protego>=0.3",
+    "langgraph>=0.2",
+]
+
+[project.optional-dependencies]
+browser = ["crawl4ai>=0.7"]
+dev = ["pytest>=8.0"]
+ui = ["streamlit>=1.38", "pandas>=2.0"]
+
+[project.scripts]
+crawler-agent = "crawler_agent.cli:app"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"crawler_agent.sites" = ["registry.yaml"]

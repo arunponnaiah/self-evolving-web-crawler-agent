@@ -1,0 +1,42 @@
+# Declarative registry of regulatory sites to crawl.
+# Add a new site by adding an entry here (or via `crawler-agent add-site <file>`) --
+# no code changes required.
+
+- id: us_federal_register
+  name: US Federal Register
+  country: US
+  base_url: https://www.federalregister.gov
+  # federalregister.gov's robots.txt disallows /documents/search (their HTML
+  # listing pages), and the site's own access-denied page explicitly asks
+  # automated tools to use their public JSON API instead -- so that's what
+  # we point at. No API key required; this is their sanctioned bulk-access path.
+  seed_urls:
+    - https://www.federalregister.gov/api/v1/documents.json?conditions%5Btype%5D%5B%5D=RULE&per_page=20&order=newest
+    - https://www.federalregister.gov/api/v1/documents.json?conditions%5Btype%5D%5B%5D=PRORULE&per_page=20&order=newest
+  fetch_mode: http
+  crawl_interval_hours: 24
+
+- id: uk_legislation
+  name: UK Legislation (Statutory Instruments)
+  country: GB
+  base_url: https://www.legislation.gov.uk
+  # Plain HTTP requests get an empty response from this site's CDN (bot
+  # mitigation); a real browser renders it fine, so this site needs
+  # fetch_mode: browser. The UI listing page (/uksi) is a browse-by-year hub
+  # with no real per-document rows and ~100KB of year/count facet noise before
+  # any actual content; the sanctioned Atom feed is a flat, structured listing
+  # of real documents and extracts cleanly and deterministically.
+  seed_urls:
+    - https://www.legislation.gov.uk/uksi/data.feed?sort=published
+  fetch_mode: browser
+  crawl_interval_hours: 24
+
+- id: eu_eurlex
+  name: EU EUR-Lex Official Journal
+  country: EU
+  base_url: https://eur-lex.europa.eu
+  # Same CDN bot-mitigation behavior as uk_legislation -- needs a real browser.
+  seed_urls:
+    - https://eur-lex.europa.eu/oj/direct-access.html
+  fetch_mode: browser
+  crawl_interval_hours: 24
