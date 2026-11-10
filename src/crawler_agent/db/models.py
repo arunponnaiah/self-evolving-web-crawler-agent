@@ -85,11 +85,34 @@ class RegulationItem(Base):
 class ChangeEvent(Base):
     __tablename__ = "change_events"
 
+    # type values: new_item | updated_item | layout_relearned | access_blocked |
+    # site_discovered | seed_url_self_corrected
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     detected_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    type: Mapped[str] = mapped_column(String(32))  # new_item | updated_item | layout_relearned
+    type: Mapped[str] = mapped_column(String(32))
     site_id: Mapped[int] = mapped_column(ForeignKey("sites.id"), index=True)
     regulation_item_id: Mapped[int | None] = mapped_column(
         ForeignKey("regulation_items.id"), nullable=True
     )
     details_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class SummaryFeedback(Base):
+    """Human feedback on an extracted summary.
+
+    This is the "self-learning from feedback" mechanism: rows here get read
+    back by `feedback/store.py` and spliced into the extraction prompt as
+    examples, so accumulated corrections actually change future summaries --
+    no fine-tuning required.
+    """
+
+    __tablename__ = "summary_feedback"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    regulation_item_id: Mapped[int] = mapped_column(
+        ForeignKey("regulation_items.id"), index=True
+    )
+    rating: Mapped[str] = mapped_column(String(8))  # "up" | "down"
+    corrected_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

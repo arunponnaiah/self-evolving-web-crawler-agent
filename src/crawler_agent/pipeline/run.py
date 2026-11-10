@@ -13,7 +13,9 @@ from crawler_agent.agent.graph import build_crawl_agent, run_url
 from crawler_agent.change_detection.detector import classify_and_upsert
 from crawler_agent.config import settings
 from crawler_agent.db.models import ChangeEvent, PageSnapshot, Site
+from crawler_agent.discovery.resolver import resolve_seed_url
 from crawler_agent.extraction.schemas import Extractor
+from crawler_agent.fetch.base import Fetcher
 from crawler_agent.fetch.browser_fetcher import BrowserFetcher
 from crawler_agent.fetch.http_fetcher import HttpFetcher
 from crawler_agent.layout.diff import resolve_layout_version
@@ -62,16 +64,29 @@ def run_crawl(
     to a browser or give up blocked -> fingerprint/diff -> LLM extract ->
     change-detect -> persist. Returns a summary for reporting."""
     site = _get_or_create_site(session, config)
+    http_fetcher: Fetcher = HttpFetcher()
+    browser_fetcher: Fetcher = BrowserFetcher()
     agent = build_crawl_agent(
-        http_fetcher=HttpFetcher(),
-        browser_fetcher=BrowserFetcher(),
+        http_fetcher=http_fetcher,
+        browser_fetcher=browser_fetcher,
         assessor=assessor or LlmContentAssessor(),
         extractor=extractor,
     )
     summary = CrawlRunSummary(site_id=config.id)
     limit = max_pages if max_pages is not None else settings.max_pages_per_run
 
-    for url in config.seed_urls[:limit]:
+    if config.seed_resolver:
+        resolver_fetcher = browser_fetcher if config.fetch_mode == "browser" else http_fetcher
+        try:
+            seed_urls = [resolve_seed_url(config.seed_resolver, resolver_fetcher)]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("seed_resolver '%s' failed for %s: %s", config.seed_resolver, config.id, exc)
+            summary.errors.append(f"seed_resolver:{config.seed_resolver}:{exc}")
+            seed_urls = []
+    else:
+        seed_urls = config.seed_urls
+
+    for url in seed_urls[:limit]:
         result = run_url(agent, url, fetch_mode=config.fetch_mode)
 
         if result.status != "extracted":

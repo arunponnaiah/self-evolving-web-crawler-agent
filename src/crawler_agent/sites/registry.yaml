@@ -36,7 +36,13 @@
   country: EU
   base_url: https://eur-lex.europa.eu
   # Same CDN bot-mitigation behavior as uk_legislation -- needs a real browser.
+  # direct-access.html is a static hub page with no real per-document rows of
+  # its own; the actual content lives on a dated daily-view page that changes
+  # every day. seed_resolver resolves "today's issue" dynamically at crawl
+  # time (discovery/resolver.py's eurlex_latest_oj) instead of a stale static
+  # URL -- this is what previously caused EU's extraction to flicker.
   seed_urls:
     - https://eur-lex.europa.eu/oj/direct-access.html
+  seed_resolver: eurlex_latest_oj
   fetch_mode: browser
   crawl_interval_hours: 24

@@ -75,3 +75,30 @@ Page text content:
 ---
 
 Extract all regulatory items from this page using the `record_regulation_items` tool."""
+
+
+FEEDBACK_SECTION_HEADER = "Lessons from user feedback on past summaries -- apply these patterns:"
+
+
+def render_feedback_section(examples: list) -> str:
+    """Build a prompt section from accumulated human feedback on summaries.
+
+    This is the actual learning mechanism for Way 2 of the self-learning
+    work: no fine-tuning, just in-context examples re-read and re-spliced in
+    every time an LlmExtractor is built, so corrections persist across runs.
+    Returns "" if there's nothing worth showing (keeps the prompt unchanged
+    when there's no feedback yet).
+    """
+    if not examples:
+        return ""
+    lines = [FEEDBACK_SECTION_HEADER]
+    for ex in examples:
+        if ex.corrected_summary:
+            lines.append(
+                f'- Before: "{ex.original_summary}"'
+                + (f' -- user feedback: "{ex.comment}"' if ex.comment else "")
+                + f' -- After (preferred): "{ex.corrected_summary}"'
+            )
+        elif ex.rating == "down" and ex.comment:
+            lines.append(f'- A summary like "{ex.original_summary}" was rated unhelpful: "{ex.comment}"')
+    return "\n\n" + "\n".join(lines) + "\n"

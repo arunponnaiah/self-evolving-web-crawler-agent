@@ -16,6 +16,13 @@ empty crawl as if it succeeded. It also deduces upcoming regulatory changes
 (proposed rules, future effective dates) and stores everything in a local
 SQLite database.
 
+Two things actually get smarter from accumulated history, not just reactive
+within a single run — see [Self-learning](#self-learning) below:
+1. The agent re-validates its own seed URLs, self-corrects when one stops
+   working, and can discover+register a new country's regulatory site.
+2. Human corrections to extracted summaries, given through the dashboard,
+   persist and measurably change future extractions.
+
 ## Setup
 
 ```bash
@@ -33,6 +40,9 @@ cp .env.example .env   # then set ANTHROPIC_API_KEY
 .venv/bin/crawler-agent crawl --all
 .venv/bin/crawler-agent list-upcoming --country US
 .venv/bin/crawler-agent list-layout-events
+.venv/bin/crawler-agent revalidate-sites
+.venv/bin/crawler-agent discover-site --country CA
+.venv/bin/crawler-agent list-feedback
 ```
 
 ### Dashboard
@@ -131,21 +141,72 @@ for HTTP-fetched pages.
 
 ### Known limitations
 
-- **EU EUR-Lex's current seed page** (`direct-access.html`) is an index/hub
-  page with no real per-document rows of its own — the actual content lives
-  on a dated daily-view page (e.g. `.../daily-view/L-series/default.html?ojDate=09112026`)
-  that changes every day, so a static seed URL would go stale. A dynamic
-  "resolve today's issue URL" step would fix this but isn't built yet; until
-  then, EU extraction occasionally still flags an unchanged item as updated,
-  because the only available seed content is ambiguous descriptive prose
-  rather than a real listing.
 - LLM extraction is not perfectly deterministic in general. Change detection
   (`change_detection/detector.py`) only hashes material fields (title, status,
-  dates, document type) — not free-text summary — and normalizes trailing
-  punctuation on titles, specifically so that harmless extraction variance
-  doesn't get logged as a false "updated" event. US Federal Register and UK
-  Legislation have been verified stable (zero false updates) across repeated
-  crawls; EU has not, for the reason above.
+  dates, document type/number) — not free-text summary — and normalizes
+  trailing punctuation on titles, specifically so that harmless extraction
+  variance doesn't get logged as a false "updated" event. US Federal Register
+  and UK Legislation have been verified stable (zero false updates) across
+  repeated crawls; EU is now close (19/20 items stable on a real run) but one
+  ambiguous document type (a "Decision" entry with no clean machine-readable
+  status field, unlike the clearly-typed "Regulation" entries on the same
+  page) still occasionally flickers between `enacted`/`unknown`.
+
+## Self-learning
+
+Two mechanisms actually change the agent's behavior over time from
+accumulated history, rather than just reacting within a single crawl:
+
+### 1. Site discovery and self-correction (`crawler_agent/discovery/`)
+
+- **`crawler-agent revalidate-sites`** re-probes every registered site's seed
+  URL through the exact same fetch→assess→extract pipeline a real crawl
+  uses (`discovery/probe.py` wraps `agent/graph.py`'s `run_url`), and
+  self-corrects the registry if a seed stops yielding real items — either by
+  calling a site's declared dynamic resolver (see below) or by trying a
+  small set of generic fallback URL patterns and persisting whichever one
+  actually works (`sites/loader.update_site_seed_urls`).
+- **`crawler-agent discover-site --country CA`** onboards a country with no
+  registered site yet: Claude suggests candidate gazette/register URLs
+  (`discovery/candidate_suggester.py` — knowledge-sourcing, not web search,
+  since no search tool is wired into the agent), every candidate is checked
+  against a hard domain allowlist (`discovery/authentic_domains.py` — a
+  candidate that isn't a real `.gov`/`.gov.uk`/`.europa.eu`-style domain is
+  never even fetched), and only a candidate that *actually* extracts real
+  content when fetched for real gets registered. Verified live: Canada
+  Gazette candidates all passed the domain gate (they're real `.gc.ca`
+  URLs) but every specific path 404'd — the tool correctly reported failure
+  and registered nothing, rather than guessing.
+- **Dynamic seed resolvers** (`discovery/resolver.py`): some sites' real
+  content lives behind a hub page that changes daily (EU EUR-Lex's actual
+  Official Journal issue is a dated URL, not its static index page). A site
+  can declare `seed_resolver: eurlex_latest_oj` in the registry instead of a
+  fixed seed URL; `pipeline/run.py` calls the resolver fresh on every crawl.
+  This is what fixed EU's extraction quality (4 ambiguous items from the
+  index page → 20 real items from the actual daily issue).
+
+### 2. Summaries that improve from user feedback (`crawler_agent/feedback/`)
+
+In the dashboard's item detail view, rate a summary Helpful/Not helpful or
+submit a corrected rewrite. Feedback is stored (`db/models.py`'s
+`SummaryFeedback`) and `feedback/store.py`'s `recent_feedback_examples()`
+surfaces the most useful rows — ones with an explicit before/after
+correction, or a "not helpful" rating with a comment explaining what was
+wrong (a bare "helpful" has nothing to teach). Every
+crawl run (`cli.py`'s `crawl_cmd`) pulls these before building the
+extractor, and `extraction/prompts.py`'s `render_feedback_section()` splices
+them into the system prompt as worked examples — no fine-tuning, just
+in-context learning from accumulated corrections that persists across runs.
+`crawler-agent list-feedback` shows what's been recorded outside the
+dashboard.
+
+**Honest limits of both**: candidate suggestion can still be wrong (the
+Canada example above), so discovery never trusts a suggestion without an
+empirical probe; generic fallback URL patterns in revalidation are
+best-effort heuristics observed on real sites in this project, not a
+guaranteed-general mechanism; and feedback-driven prompt changes are only as
+good as the model's ability to generalize from a handful of examples, not a
+trained improvement.
 
 ## Tests
 

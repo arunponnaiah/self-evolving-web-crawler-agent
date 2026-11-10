@@ -3,7 +3,11 @@ from __future__ import annotations
 import anthropic
 
 from crawler_agent.config import settings
-from crawler_agent.extraction.prompts import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE
+from crawler_agent.extraction.prompts import (
+    SYSTEM_PROMPT,
+    USER_PROMPT_TEMPLATE,
+    render_feedback_section,
+)
 from crawler_agent.extraction.schemas import ExtractionResult
 
 TOOL_NAME = "record_regulation_items"
@@ -21,17 +25,28 @@ class LlmExtractor:
     Uses tool-use to force the model to return JSON matching ExtractionResult,
     so a malformed response is a visible exception rather than a silent parse
     failure.
+
+    `feedback_examples`, if given, gets spliced into the system prompt once
+    at construction time -- this is how accumulated human corrections to
+    past summaries (feedback/store.py) actually change future extractions,
+    without any fine-tuning.
     """
 
-    def __init__(self, model: str | None = None, api_key: str | None = None):
+    def __init__(
+        self,
+        model: str | None = None,
+        api_key: str | None = None,
+        feedback_examples: list | None = None,
+    ):
         self.model = model or settings.llm_model
         self.client = anthropic.Anthropic(api_key=api_key or settings.anthropic_api_key)
+        self.system_prompt = SYSTEM_PROMPT + render_feedback_section(feedback_examples or [])
 
     def extract(self, *, page_text: str, page_url: str) -> ExtractionResult:
         message = self.client.messages.create(
             model=self.model,
             max_tokens=8192,
-            system=SYSTEM_PROMPT,
+            system=self.system_prompt,
             tools=[_TOOL_SCHEMA],
             tool_choice={"type": "tool", "name": TOOL_NAME},
             messages=[

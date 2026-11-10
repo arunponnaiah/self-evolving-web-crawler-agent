@@ -7,8 +7,9 @@ import streamlit as st
 from sqlalchemy import select
 
 from crawler_agent.change_detection.detector import upcoming_changes
-from crawler_agent.db.models import ChangeEvent, RegulationItem, Site
+from crawler_agent.db.models import ChangeEvent, RegulationItem, Site, SummaryFeedback
 from crawler_agent.db.session import get_session
+from crawler_agent.feedback.store import record_feedback
 
 st.set_page_config(page_title="Regulatory Crawler Agent", layout="wide")
 st.title("Self-Evolving Regulatory Crawler Agent")
@@ -33,6 +34,7 @@ def load_sites() -> pd.DataFrame:
 
 
 REGULATION_ITEM_COLUMNS = [
+    "id",
     "site",
     "country",
     "title",
@@ -61,6 +63,7 @@ def load_regulation_items() -> pd.DataFrame:
         return pd.DataFrame(
             [
                 {
+                    "id": r.id,
                     "site": site_by_id[r.site_id].slug if r.site_id in site_by_id else r.site_id,
                     "country": site_by_id[r.site_id].country if r.site_id in site_by_id else None,
                     "title": r.title,
@@ -211,7 +214,7 @@ with tab_items:
         items_df = items_df[items_df["title"].str.contains(search, case=False, na=False)]
     st.caption(f"{len(items_df)} item(s)")
     st.dataframe(
-        items_df,
+        items_df.drop(columns=["id"]),
         width="stretch",
         hide_index=True,
         column_config={
@@ -235,6 +238,51 @@ with tab_items:
         st.markdown(" &nbsp;|&nbsp; ".join(meta_bits))
         st.write(row["summary"] or "_(no summary extracted)_")
         st.write(row["source_url"])
+
+        st.markdown("##### Was this summary helpful?")
+        item_id = int(row["id"])
+        col_up, col_down, _ = st.columns([1, 1, 4])
+        if col_up.button("Helpful", key=f"up_{item_id}"):
+            with get_session() as fb_session:
+                record_feedback(fb_session, item_id, rating="up")
+            st.cache_data.clear()
+            st.success("Thanks -- recorded.")
+        if col_down.button("Not helpful", key=f"down_{item_id}"):
+            st.session_state[f"show_correction_{item_id}"] = True
+
+        if st.session_state.get(f"show_correction_{item_id}"):
+            with st.form(key=f"correction_form_{item_id}"):
+                comment = st.text_input("What's wrong with it? (optional)")
+                corrected = st.text_area(
+                    "Suggest a better summary (optional)", value=row["summary"] or ""
+                )
+                if st.form_submit_button("Submit feedback"):
+                    with get_session() as fb_session:
+                        record_feedback(
+                            fb_session,
+                            item_id,
+                            rating="down",
+                            corrected_summary=corrected if corrected != row["summary"] else None,
+                            comment=comment or None,
+                        )
+                    st.session_state[f"show_correction_{item_id}"] = False
+                    st.cache_data.clear()
+                    st.success("Thanks -- this will inform future extractions.")
+
+        with get_session() as fb_session:
+            past_feedback = fb_session.scalars(
+                select(SummaryFeedback)
+                .where(SummaryFeedback.regulation_item_id == item_id)
+                .order_by(SummaryFeedback.created_at.desc())
+            ).all()
+        if past_feedback:
+            with st.expander(f"Past feedback ({len(past_feedback)})"):
+                for fb in past_feedback:
+                    st.write(f"**{fb.rating}** -- {fb.created_at.isoformat()}")
+                    if fb.comment:
+                        st.caption(f"Comment: {fb.comment}")
+                    if fb.corrected_summary:
+                        st.caption(f"Suggested: {fb.corrected_summary}")
 
 with tab_layouts:
     st.subheader("Layout-learning history")

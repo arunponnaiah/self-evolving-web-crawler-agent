@@ -8,10 +8,15 @@ from pathlib import Path
 import typer
 import yaml
 
-from crawler_agent.db.models import ChangeEvent, Site
+from sqlalchemy import select
+
+from crawler_agent.db.models import ChangeEvent, Site, SummaryFeedback
 from crawler_agent.db.session import get_session, init_db
+from crawler_agent.discovery.discover import discover_site
+from crawler_agent.discovery.revalidate import revalidate_all
 from crawler_agent.extraction.llm_extractor import LlmExtractor
 from crawler_agent.change_detection.detector import upcoming_changes
+from crawler_agent.feedback.store import recent_feedback_examples
 from crawler_agent.pipeline.run import run_crawl
 from crawler_agent.sites.loader import SiteConfig, append_site, load_registry
 
@@ -46,8 +51,9 @@ def crawl_cmd(
         typer.echo("Pass --site <id> or --all.", err=True)
         raise typer.Exit(1)
 
-    extractor = LlmExtractor()
     with get_session() as session:
+        feedback_examples = recent_feedback_examples(session)
+        extractor = LlmExtractor(feedback_examples=feedback_examples)
         for config in targets:
             typer.echo(f"Crawling {config.id} ({config.name})...")
             summary = run_crawl(session, config, extractor, max_pages=max_pages)
@@ -84,8 +90,6 @@ def list_upcoming_cmd(
 def list_layout_events_cmd() -> None:
     """Show the agent's layout-learning history (when it detected a new layout)."""
     with get_session() as session:
-        from sqlalchemy import select
-
         events = session.scalars(
             select(ChangeEvent)
             .where(ChangeEvent.type == "layout_relearned")
@@ -107,6 +111,69 @@ def add_site_cmd(config_path: Path) -> None:
     config = SiteConfig.model_validate(data)
     append_site(config)
     typer.echo(f"Registered site '{config.id}'.")
+
+
+@app.command("discover-site")
+def discover_site_cmd(
+    country: str = typer.Option(..., "--country", help="Country code/name to discover a site for"),
+) -> None:
+    """Self-learning site discovery: suggest, validate, and register a
+    working regulatory site for a country not yet in the registry."""
+    report = discover_site(country)
+    for probe in report.tried:
+        status = "OK" if probe.works else f"failed ({probe.reason})"
+        typer.echo(f"  tried [{probe.fetch_mode}] {probe.url} -> {status}")
+    for url in report.rejected_unauthentic:
+        typer.echo(f"  rejected (not an authentic {country} domain): {url}")
+    if report.registered_site_id:
+        typer.echo(f"Registered new site '{report.registered_site_id}'.")
+    else:
+        typer.echo(f"No working site found for '{country}'.")
+
+
+@app.command("revalidate-sites")
+def revalidate_sites_cmd(
+    site: str = typer.Option(None, "--site", help="Only revalidate this site id"),
+) -> None:
+    """Self-learning site maintenance: re-check each registered site's seed
+    URL still yields real items, and self-correct the registry if not."""
+    init_db()
+    with get_session() as session:
+        results = revalidate_all(session, site_id=site)
+        for result in results:
+            if result.corrected_to:
+                typer.echo(f"{result.site_id}: self-corrected seed URL -> {result.corrected_to}")
+            elif result.still_working:
+                typer.echo(f"{result.site_id}: still working, no change needed.")
+            else:
+                typer.echo(f"{result.site_id}: NO WORKING SEED FOUND -- needs manual attention.")
+            for probe in result.tried:
+                status = "OK" if probe.works else f"failed ({probe.reason})"
+                typer.echo(f"  tried [{probe.fetch_mode}] {probe.url} -> {status}")
+
+
+@app.command("list-feedback")
+def list_feedback_cmd(
+    item_id: int = typer.Option(None, "--item", help="Only show feedback for this regulation item id"),
+) -> None:
+    """Show recorded summary feedback."""
+    with get_session() as session:
+        query = select(SummaryFeedback).order_by(SummaryFeedback.created_at.desc())
+        if item_id is not None:
+            query = query.where(SummaryFeedback.regulation_item_id == item_id)
+        rows = session.scalars(query).all()
+        if not rows:
+            typer.echo("No feedback recorded yet.")
+            return
+        for row in rows:
+            typer.echo(
+                f"[item {row.regulation_item_id}] {row.rating} "
+                f"{row.created_at.isoformat()}"
+            )
+            if row.corrected_summary:
+                typer.echo(f"  corrected: {row.corrected_summary}")
+            if row.comment:
+                typer.echo(f"  comment: {row.comment}")
 
 
 @app.command("ui")
