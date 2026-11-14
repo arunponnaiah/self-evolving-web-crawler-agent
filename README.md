@@ -122,6 +122,15 @@ instead of a fixed fetch-then-extract pipeline:
   response from these sites' CDN-level bot mitigation; a real (headless)
   browser renders the actual page, so both are configured with
   `fetch_mode: browser`.
+- **EU EUR-Lex is currently `enabled: false`** (as of 2026-11-14) —
+  `eur-lex.europa.eu/robots.txt` now returns `User-agent: *` / `Disallow: /`,
+  a site-wide block of all automated access (even Googlebot). That's not a
+  narrow rule or a bot-check to escalate past; the operator has withdrawn
+  permission entirely, and this project never crawls past an explicit
+  `robots.txt` disallow, no exceptions. The config (seed URL, resolver) is
+  kept rather than deleted. `crawler-agent revalidate-sites` checks disabled
+  sites too and auto re-enables one the moment its probe succeeds again — so
+  if EUR-Lex's policy changes back, running it is enough to pick that up.
 
 ### Content cleaning and markdown
 
@@ -183,7 +192,10 @@ accumulated history, rather than just reacting within a single crawl:
   can declare `seed_resolver: eurlex_latest_oj` in the registry instead of a
   fixed seed URL; `pipeline/run.py` calls the resolver fresh on every crawl.
   This is what fixed EU's extraction quality (4 ambiguous items from the
-  index page → 20 real items from the actual daily issue).
+  index page → 20 real items from the actual daily issue) — before EUR-Lex's
+  `robots.txt` later changed to block all automated access entirely (see
+  "Per-site fetch strategy" above); the resolver and its logic are kept
+  as-is for if/when that changes back.
 
 ### 2. Summaries that improve from user feedback (`crawler_agent/feedback/`)
 

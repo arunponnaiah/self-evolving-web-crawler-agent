@@ -20,6 +20,11 @@ class SiteConfig(BaseModel):
     # real seed URL at crawl time (e.g. "find today's OJ issue") instead of
     # using a static seed_urls entry verbatim. None means use seed_urls as-is.
     seed_resolver: str | None = None
+    # False means "don't crawl this" -- e.g. the site's robots.txt now
+    # disallows the whole domain. The config (seed_urls, seed_resolver,
+    # comments) is kept rather than deleted, in case the site's policy
+    # changes back later; flip this to true to reactivate.
+    enabled: bool = True
 
 
 def load_registry(path: Path = REGISTRY_PATH) -> list[SiteConfig]:
@@ -42,6 +47,22 @@ def append_site(config: SiteConfig, path: Path = REGISTRY_PATH) -> None:
     if any(s.id == config.id for s in entries):
         raise ValueError(f"site id '{config.id}' already registered")
     entries.append(config)
+    path.write_text(yaml.safe_dump([e.model_dump() for e in entries], sort_keys=False))
+
+
+def update_site_enabled(site_id: str, enabled: bool, path: Path = REGISTRY_PATH) -> None:
+    """Flip a site's enabled flag (e.g. auto re-enabling one that was
+    disabled for a robots.txt block, once revalidation confirms it works
+    again)."""
+    entries = load_registry(path)
+    found = False
+    for entry in entries:
+        if entry.id == site_id:
+            entry.enabled = enabled
+            found = True
+            break
+    if not found:
+        raise ValueError(f"site id '{site_id}' not found in registry")
     path.write_text(yaml.safe_dump([e.model_dump() for e in entries], sort_keys=False))
 
 

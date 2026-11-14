@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from sqlalchemy.orm import Session
 
@@ -12,7 +13,13 @@ from crawler_agent.discovery.resolver import resolve_seed_url
 from crawler_agent.fetch.base import Fetcher
 from crawler_agent.fetch.browser_fetcher import BrowserFetcher
 from crawler_agent.fetch.http_fetcher import HttpFetcher
-from crawler_agent.sites.loader import SiteConfig, load_registry, update_site_seed_urls
+from crawler_agent.sites.loader import (
+    REGISTRY_PATH,
+    SiteConfig,
+    load_registry,
+    update_site_enabled,
+    update_site_seed_urls,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,13 +36,17 @@ class RevalidationResult:
     still_working: bool
     corrected_to: str | None = None
     tried: list[ProbeResult] = field(default_factory=list)
+    was_disabled: bool = False
+    reenabled: bool = False
 
 
 def _fetcher_for(fetch_mode: str) -> Fetcher:
     return BrowserFetcher() if fetch_mode == "browser" else HttpFetcher()
 
 
-def revalidate_site(session: Session, config: SiteConfig) -> RevalidationResult:
+def revalidate_site(
+    session: Session, config: SiteConfig, agent=None, registry_path: Path = REGISTRY_PATH
+) -> RevalidationResult:
     """Re-check whether a registered site's seed URL still yields real items,
     and self-correct the registry if it doesn't.
 
@@ -43,8 +54,12 @@ def revalidate_site(session: Session, config: SiteConfig) -> RevalidationResult:
     uses that as the primary strategy, since its static seed is known-weak.
     Otherwise the existing static seed_urls are probed first; on failure, a
     small set of generic variants are tried as a best-effort fallback.
+
+    `agent` is injectable (defaults to a real `build_probe_agent()`) so
+    callers revalidating many sites can share one agent instead of rebuilding
+    it per site, and so tests can pass a fake-backed agent.
     """
-    agent = build_probe_agent()
+    agent = agent or build_probe_agent()
     result = RevalidationResult(site_id=config.id, still_working=False)
 
     if config.seed_resolver:
@@ -79,16 +94,22 @@ def revalidate_site(session: Session, config: SiteConfig) -> RevalidationResult:
         if probe.works:
             result.still_working = True
             result.corrected_to = variant
-            _persist_correction(session, config, old_urls=config.seed_urls, new_urls=[variant])
+            _persist_correction(
+                session, config, old_urls=config.seed_urls, new_urls=[variant], registry_path=registry_path
+            )
             return result
 
     return result
 
 
 def _persist_correction(
-    session: Session, config: SiteConfig, old_urls: list[str], new_urls: list[str]
+    session: Session,
+    config: SiteConfig,
+    old_urls: list[str],
+    new_urls: list[str],
+    registry_path: Path = REGISTRY_PATH,
 ) -> None:
-    update_site_seed_urls(config.id, new_urls)
+    update_site_seed_urls(config.id, new_urls, path=registry_path)
     site = session.query(Site).filter(Site.slug == config.id).one_or_none()
     if site is not None:
         session.add(
@@ -101,8 +122,45 @@ def _persist_correction(
         session.flush()
 
 
-def revalidate_all(session: Session, site_id: str | None = None) -> list[RevalidationResult]:
-    configs = load_registry()
+def revalidate_all(
+    session: Session,
+    site_id: str | None = None,
+    agent=None,
+    registry_path: Path = REGISTRY_PATH,
+) -> list[RevalidationResult]:
+    """Revalidate every registered site, including disabled ones.
+
+    Disabled sites are still probed -- the probe itself is safe even for a
+    site disabled over a robots.txt block, since fetching still goes through
+    the same RobotsChecker and simply fails cleanly if the disallow is still
+    in place. If a disabled site's probe now succeeds (e.g. the site's
+    robots.txt policy changed back), it's auto re-enabled -- that's a safe
+    thing to automate, since re-enabling only ever follows a real passing
+    probe. A site that's enabled but stops working is NOT auto-disabled;
+    that's left for a human to decide, same as the robots.txt-wide-block
+    case that prompted this feature.
+    """
+    configs = load_registry(path=registry_path)
     if site_id:
         configs = [c for c in configs if c.id == site_id]
-    return [revalidate_site(session, config) for config in configs]
+    agent = agent or build_probe_agent()
+
+    results = []
+    for config in configs:
+        result = revalidate_site(session, config, agent=agent, registry_path=registry_path)
+        result.was_disabled = not config.enabled
+        if not config.enabled and result.still_working:
+            update_site_enabled(config.id, True, path=registry_path)
+            result.reenabled = True
+            site = session.query(Site).filter(Site.slug == config.id).one_or_none()
+            if site is not None:
+                session.add(
+                    ChangeEvent(
+                        type="site_reenabled",
+                        site_id=site.id,
+                        details_json=json.dumps({"reason": "revalidation probe succeeded"}),
+                    )
+                )
+                session.flush()
+        results.append(result)
+    return results

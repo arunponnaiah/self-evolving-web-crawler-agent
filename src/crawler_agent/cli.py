@@ -41,11 +41,17 @@ def crawl_cmd(
     init_db()
     registry = load_registry()
     if all_sites:
-        targets = registry
+        targets = [s for s in registry if s.enabled]
+        skipped = [s.id for s in registry if not s.enabled]
+        for site_id in skipped:
+            typer.echo(f"Skipping disabled site '{site_id}'.")
     elif site:
         targets = [s for s in registry if s.id == site]
         if not targets:
             typer.echo(f"No such site '{site}' in registry.", err=True)
+            raise typer.Exit(1)
+        if not targets[0].enabled:
+            typer.echo(f"Site '{site}' is disabled in the registry; not crawling.", err=True)
             raise typer.Exit(1)
     else:
         typer.echo("Pass --site <id> or --all.", err=True)
@@ -141,10 +147,15 @@ def revalidate_sites_cmd(
     with get_session() as session:
         results = revalidate_all(session, site_id=site)
         for result in results:
-            if result.corrected_to:
+            if result.reenabled:
+                typer.echo(f"{result.site_id}: RE-ENABLED -- it works again.")
+            elif result.corrected_to:
                 typer.echo(f"{result.site_id}: self-corrected seed URL -> {result.corrected_to}")
             elif result.still_working:
-                typer.echo(f"{result.site_id}: still working, no change needed.")
+                status = "disabled but still probes fine" if result.was_disabled else "still working"
+                typer.echo(f"{result.site_id}: {status}, no change needed.")
+            elif result.was_disabled:
+                typer.echo(f"{result.site_id}: still disabled, still not working.")
             else:
                 typer.echo(f"{result.site_id}: NO WORKING SEED FOUND -- needs manual attention.")
             for probe in result.tried:

@@ -46,3 +46,10 @@
   seed_resolver: eurlex_latest_oj
   fetch_mode: browser
   crawl_interval_hours: 24
+  # DISABLED as of 2026-11-14: eur-lex.europa.eu/robots.txt now returns
+  # "User-agent: *\nDisallow: /" -- a site-wide block of all automated
+  # access (even Googlebot is disallowed). This isn't a narrow rule or a
+  # bot-check to escalate past; the site operator has withdrawn permission
+  # entirely, and this project never crawls past an explicit robots.txt
+  # disallow. Flip back to true if/when EUR-Lex's robots.txt changes.
+  enabled: false
