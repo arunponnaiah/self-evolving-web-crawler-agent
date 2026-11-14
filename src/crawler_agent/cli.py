@@ -13,10 +13,23 @@ from sqlalchemy import select
 from crawler_agent.db.models import ChangeEvent, Site, SummaryFeedback
 from crawler_agent.db.session import get_session, init_db
 from crawler_agent.discovery.discover import discover_site
+from crawler_agent.discovery.proposals import (
+    approve_proposal,
+    list_pending_proposals,
+    list_reviewed_proposals,
+    reject_proposal,
+)
 from crawler_agent.discovery.revalidate import revalidate_all
 from crawler_agent.extraction.llm_extractor import LlmExtractor
+from crawler_agent.extraction.prompt_review import (
+    approve_draft,
+    build_prompt_draft,
+    diff_against_deployed,
+    get_deployed_system_prompt,
+    list_reviewed_drafts,
+    reject_draft,
+)
 from crawler_agent.change_detection.detector import upcoming_changes
-from crawler_agent.feedback.store import recent_feedback_examples
 from crawler_agent.pipeline.run import run_crawl
 from crawler_agent.sites.loader import SiteConfig, append_site, load_registry
 
@@ -58,8 +71,10 @@ def crawl_cmd(
         raise typer.Exit(1)
 
     with get_session() as session:
-        feedback_examples = recent_feedback_examples(session)
-        extractor = LlmExtractor(feedback_examples=feedback_examples)
+        # Only ever the latest *approved* prompt -- feedback that hasn't
+        # been reviewed via `review-prompt`/`approve-prompt` never reaches a
+        # real crawl. See extraction/prompt_review.py.
+        extractor = LlmExtractor(system_prompt=get_deployed_system_prompt(session))
         for config in targets:
             typer.echo(f"Crawling {config.id} ({config.name})...")
             summary = run_crawl(session, config, extractor, max_pages=max_pages)
@@ -123,18 +138,74 @@ def add_site_cmd(config_path: Path) -> None:
 def discover_site_cmd(
     country: str = typer.Option(..., "--country", help="Country code/name to discover a site for"),
 ) -> None:
-    """Self-learning site discovery: suggest, validate, and register a
-    working regulatory site for a country not yet in the registry."""
-    report = discover_site(country)
-    for probe in report.tried:
-        status = "OK" if probe.works else f"failed ({probe.reason})"
-        typer.echo(f"  tried [{probe.fetch_mode}] {probe.url} -> {status}")
-    for url in report.rejected_unauthentic:
-        typer.echo(f"  rejected (not an authentic {country} domain): {url}")
-    if report.registered_site_id:
-        typer.echo(f"Registered new site '{report.registered_site_id}'.")
-    else:
-        typer.echo(f"No working site found for '{country}'.")
+    """Self-learning site discovery: suggest and validate a working
+    regulatory site for a country not yet in the registry. Never registers
+    it automatically -- a working candidate becomes a pending proposal;
+    run `approve-site` to actually add it."""
+    init_db()
+    with get_session() as session:
+        report = discover_site(session, country)
+        for probe in report.tried:
+            status = "OK" if probe.works else f"failed ({probe.reason})"
+            typer.echo(f"  tried [{probe.fetch_mode}] {probe.url} -> {status}")
+        for url in report.rejected_unauthentic:
+            typer.echo(f"  rejected (not an authentic {country} domain): {url}")
+        if report.proposal_id:
+            typer.echo(
+                f"Found a working candidate -- pending approval as proposal #{report.proposal_id}. "
+                f"Run `crawler-agent approve-site {report.proposal_id}` to register it, "
+                f"or `reject-site {report.proposal_id}` to discard it."
+            )
+        else:
+            typer.echo(f"No working site found for '{country}'.")
+
+
+@app.command("list-pending-sites")
+def list_pending_sites_cmd() -> None:
+    """Show site discovery candidates awaiting human approval."""
+    with get_session() as session:
+        proposals = list_pending_proposals(session)
+        if not proposals:
+            typer.echo("No pending site proposals.")
+            return
+        for p in proposals:
+            typer.echo(f"#{p.id} [{p.country}] {p.name} ({p.base_url}) -- {p.created_at.isoformat()}")
+
+
+@app.command("approve-site")
+def approve_site_cmd(
+    proposal_id: int,
+    comment: str = typer.Option(None, "--comment", help="Why you're approving this"),
+) -> None:
+    """Register a pending site proposal into the registry."""
+    with get_session() as session:
+        proposal = approve_proposal(session, proposal_id, comment=comment)
+        typer.echo(f"Registered site '{proposal.slug}' from proposal #{proposal_id}.")
+
+
+@app.command("reject-site")
+def reject_site_cmd(
+    proposal_id: int,
+    comment: str = typer.Option(None, "--comment", help="Why you're rejecting this"),
+) -> None:
+    """Discard a pending site proposal without registering it."""
+    with get_session() as session:
+        reject_proposal(session, proposal_id, comment=comment)
+        typer.echo(f"Rejected proposal #{proposal_id}.")
+
+
+@app.command("list-site-decisions")
+def list_site_decisions_cmd() -> None:
+    """Show recently approved/rejected site proposals and why."""
+    with get_session() as session:
+        decisions = list_reviewed_proposals(session)
+        if not decisions:
+            typer.echo("No reviewed site proposals yet.")
+            return
+        for p in decisions:
+            typer.echo(f"#{p.id} [{p.status}] {p.name} -- {p.reviewed_at.isoformat()}")
+            if p.review_comment:
+                typer.echo(f"  comment: {p.review_comment}")
 
 
 @app.command("revalidate-sites")
@@ -185,6 +256,62 @@ def list_feedback_cmd(
                 typer.echo(f"  corrected: {row.corrected_summary}")
             if row.comment:
                 typer.echo(f"  comment: {row.comment}")
+
+
+@app.command("review-prompt")
+def review_prompt_cmd() -> None:
+    """Build (if needed) and show the pending prompt draft -- what the
+    extraction system prompt would become if current feedback were applied,
+    as a diff against what's actually deployed. Nothing changes until
+    `approve-prompt` is run."""
+    init_db()
+    with get_session() as session:
+        draft = build_prompt_draft(session)
+        if draft is None:
+            typer.echo("No pending draft -- current feedback matches the deployed prompt.")
+            return
+        typer.echo(f"Draft #{draft.id} pending review:")
+        typer.echo(diff_against_deployed(session, draft))
+        typer.echo(
+            f"\nRun `crawler-agent approve-prompt {draft.id}` to deploy it, "
+            f"or `reject-prompt {draft.id}` to discard it."
+        )
+
+
+@app.command("approve-prompt")
+def approve_prompt_cmd(
+    draft_id: int,
+    comment: str = typer.Option(None, "--comment", help="Why you're approving this"),
+) -> None:
+    """Deploy a reviewed prompt draft -- future crawls will use it."""
+    with get_session() as session:
+        approve_draft(session, draft_id, comment=comment)
+        typer.echo(f"Approved and deployed prompt draft #{draft_id}.")
+
+
+@app.command("reject-prompt")
+def reject_prompt_cmd(
+    draft_id: int,
+    comment: str = typer.Option(None, "--comment", help="Why you're rejecting this"),
+) -> None:
+    """Discard a prompt draft -- the currently deployed prompt is unchanged."""
+    with get_session() as session:
+        reject_draft(session, draft_id, comment=comment)
+        typer.echo(f"Rejected prompt draft #{draft_id}.")
+
+
+@app.command("list-prompt-decisions")
+def list_prompt_decisions_cmd() -> None:
+    """Show recently approved/rejected prompt drafts and why."""
+    with get_session() as session:
+        decisions = list_reviewed_drafts(session)
+        if not decisions:
+            typer.echo("No reviewed prompt drafts yet.")
+            return
+        for d in decisions:
+            typer.echo(f"#{d.id} [{d.status}] {d.reviewed_at.isoformat()}")
+            if d.review_comment:
+                typer.echo(f"  comment: {d.review_comment}")
 
 
 @app.command("ui")

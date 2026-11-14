@@ -86,7 +86,11 @@ class ChangeEvent(Base):
     __tablename__ = "change_events"
 
     # type values: new_item | updated_item | layout_relearned | access_blocked |
-    # site_discovered | seed_url_self_corrected
+    # seed_url_self_corrected | site_reenabled
+    # (SiteProposal and PromptVersion approvals are audited by their own
+    # status/reviewed_at fields, not ChangeEvent -- neither has a Site row to
+    # attach to at approval time: a proposal's Site doesn't exist until its
+    # first crawl, and a prompt isn't tied to any one site at all.)
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     detected_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     type: Mapped[str] = mapped_column(String(32))
@@ -116,3 +120,50 @@ class SummaryFeedback(Base):
     corrected_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class SiteProposal(Base):
+    """A discovered site candidate awaiting human approval.
+
+    discovery/discover.py creates one of these when it finds a URL that
+    passes the domain-authenticity gate and actually extracts real content --
+    but it never registers it into sites/registry.yaml itself. Only
+    discovery/proposals.py's approve_proposal() does that, and only a human
+    calling `crawler-agent approve-site` triggers it.
+    """
+
+    __tablename__ = "site_proposals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    slug: Mapped[str] = mapped_column(String(64))
+    name: Mapped[str] = mapped_column(String(255))
+    country: Mapped[str] = mapped_column(String(64))
+    base_url: Mapped[str] = mapped_column(String(512))
+    seed_urls_json: Mapped[str] = mapped_column(Text)
+    fetch_mode: Mapped[str] = mapped_column(String(16), default="http")
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|approved|rejected
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    reviewed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Why the reviewer approved or denied it -- shown in the dashboard's
+    # "recent decisions" summary so the reasoning behind a decision isn't lost.
+    review_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class PromptVersion(Base):
+    """A version of the extraction system prompt (base + feedback splice).
+
+    extraction/prompt_review.py's get_deployed_system_prompt() -- what real
+    crawls actually use -- only ever reads the latest row with
+    status="approved". build_prompt_draft() creates a "draft" row when
+    accumulated feedback would change the prompt; it takes effect only once
+    a human approves it via `crawler-agent approve-prompt`.
+    """
+
+    __tablename__ = "prompt_versions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    system_prompt: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(16), default="draft")  # draft|approved|rejected
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    reviewed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    review_comment: Mapped[str | None] = mapped_column(Text, nullable=True)

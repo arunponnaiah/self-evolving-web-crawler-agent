@@ -29,7 +29,10 @@ class LlmExtractor:
     `feedback_examples`, if given, gets spliced into the system prompt once
     at construction time -- this is how accumulated human corrections to
     past summaries (feedback/store.py) actually change future extractions,
-    without any fine-tuning.
+    without any fine-tuning. Prefer passing `system_prompt` directly instead
+    (e.g. `extraction/prompt_review.get_deployed_system_prompt()`'s output)
+    when feedback-driven changes should only take effect after human review
+    -- it takes precedence over `feedback_examples` when both are given.
     """
 
     def __init__(
@@ -37,10 +40,13 @@ class LlmExtractor:
         model: str | None = None,
         api_key: str | None = None,
         feedback_examples: list | None = None,
+        system_prompt: str | None = None,
     ):
         self.model = model or settings.llm_model
         self.client = anthropic.Anthropic(api_key=api_key or settings.anthropic_api_key)
-        self.system_prompt = SYSTEM_PROMPT + render_feedback_section(feedback_examples or [])
+        self.system_prompt = system_prompt or (
+            SYSTEM_PROMPT + render_feedback_section(feedback_examples or [])
+        )
 
     def extract(self, *, page_text: str, page_url: str) -> ExtractionResult:
         message = self.client.messages.create(

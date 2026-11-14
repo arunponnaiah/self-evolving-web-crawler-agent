@@ -2,10 +2,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import yaml
 from pydantic import BaseModel, Field
+from ruamel.yaml import YAML
 
 REGISTRY_PATH = Path(__file__).resolve().parent / "registry.yaml"
+
+# A round-trip-preserving loader: plain PyYAML discards comments the moment
+# it parses a file, so any load -> modify -> dump cycle through it silently
+# destroys every explanatory comment in registry.yaml (robots.txt findings,
+# why a site needs fetch_mode: browser, why one is disabled, etc). ruamel
+# keeps comments attached to their nodes through that cycle, as long as
+# writes mutate the existing structure in place rather than rebuilding it
+# from scratch.
+_yaml = YAML()
+_yaml.preserve_quotes = True
 
 
 class SiteConfig(BaseModel):
@@ -27,11 +37,21 @@ class SiteConfig(BaseModel):
     enabled: bool = True
 
 
-def load_registry(path: Path = REGISTRY_PATH) -> list[SiteConfig]:
+def _load_raw(path: Path):
     if not path.exists():
-        return []
-    raw = yaml.safe_load(path.read_text()) or []
-    return [SiteConfig.model_validate(entry) for entry in raw]
+        return _yaml.load("[]")
+    with path.open() as f:
+        return _yaml.load(f) or _yaml.load("[]")
+
+
+def _dump_raw(raw, path: Path) -> None:
+    with path.open("w") as f:
+        _yaml.dump(raw, f)
+
+
+def load_registry(path: Path = REGISTRY_PATH) -> list[SiteConfig]:
+    raw = _load_raw(path)
+    return [SiteConfig.model_validate(dict(entry)) for entry in raw]
 
 
 def get_site(site_id: str, path: Path = REGISTRY_PATH) -> SiteConfig | None:
@@ -43,27 +63,27 @@ def get_site(site_id: str, path: Path = REGISTRY_PATH) -> SiteConfig | None:
 
 def append_site(config: SiteConfig, path: Path = REGISTRY_PATH) -> None:
     """Register a new site config without touching any code."""
-    entries = load_registry(path)
-    if any(s.id == config.id for s in entries):
+    raw = _load_raw(path)
+    if any(dict(entry).get("id") == config.id for entry in raw):
         raise ValueError(f"site id '{config.id}' already registered")
-    entries.append(config)
-    path.write_text(yaml.safe_dump([e.model_dump() for e in entries], sort_keys=False))
+    raw.append(config.model_dump())
+    _dump_raw(raw, path)
 
 
 def update_site_enabled(site_id: str, enabled: bool, path: Path = REGISTRY_PATH) -> None:
     """Flip a site's enabled flag (e.g. auto re-enabling one that was
     disabled for a robots.txt block, once revalidation confirms it works
     again)."""
-    entries = load_registry(path)
+    raw = _load_raw(path)
     found = False
-    for entry in entries:
-        if entry.id == site_id:
-            entry.enabled = enabled
+    for entry in raw:
+        if dict(entry).get("id") == site_id:
+            entry["enabled"] = enabled
             found = True
             break
     if not found:
         raise ValueError(f"site id '{site_id}' not found in registry")
-    path.write_text(yaml.safe_dump([e.model_dump() for e in entries], sort_keys=False))
+    _dump_raw(raw, path)
 
 
 def update_site_seed_urls(
@@ -75,13 +95,13 @@ def update_site_seed_urls(
     yielding real items and a working replacement is found -- the correction
     is written back to the registry so future crawls use it automatically.
     """
-    entries = load_registry(path)
+    raw = _load_raw(path)
     found = False
-    for entry in entries:
-        if entry.id == site_id:
-            entry.seed_urls = new_seed_urls
+    for entry in raw:
+        if dict(entry).get("id") == site_id:
+            entry["seed_urls"] = list(new_seed_urls)
             found = True
             break
     if not found:
         raise ValueError(f"site id '{site_id}' not found in registry")
-    path.write_text(yaml.safe_dump([e.model_dump() for e in entries], sort_keys=False))
+    _dump_raw(raw, path)

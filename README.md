@@ -42,7 +42,15 @@ cp .env.example .env   # then set ANTHROPIC_API_KEY
 .venv/bin/crawler-agent list-layout-events
 .venv/bin/crawler-agent revalidate-sites
 .venv/bin/crawler-agent discover-site --country CA
+.venv/bin/crawler-agent list-pending-sites
+.venv/bin/crawler-agent approve-site <id> --comment "looks legit"
+.venv/bin/crawler-agent reject-site <id> --comment "wrong country's gazette"
+.venv/bin/crawler-agent list-site-decisions
 .venv/bin/crawler-agent list-feedback
+.venv/bin/crawler-agent review-prompt
+.venv/bin/crawler-agent approve-prompt <id> --comment "good fix, deploying"
+.venv/bin/crawler-agent reject-prompt <id> --comment "too narrow, want more examples first"
+.venv/bin/crawler-agent list-prompt-decisions
 ```
 
 ### Dashboard
@@ -55,9 +63,12 @@ Opens a local Streamlit dashboard (`src/crawler_agent/ui/app.py`) at
 `http://localhost:8501` for browsing what's been crawled: an overview with
 counts per site, deduced upcoming changes, all tracked regulation items
 (filterable by country/site/status, with search), the layout-learning
-history, and the full change-event log. It reads directly from the same
-SQLite database the CLI writes to — run a crawl, then refresh the dashboard
-(or click "Refresh data" in the sidebar) to see new results.
+history, the full change-event log, a **Site Discovery** tab for
+approving/rejecting pending site proposals, and a **Prompt Review** tab for
+approving/rejecting the pending feedback-driven prompt draft (see
+[Self-learning](#self-learning)). It reads directly from the same SQLite
+database the CLI writes to — run a crawl, then refresh the dashboard (or
+click "Refresh data" in the sidebar) to see new results.
 
 Add a new regulatory site without touching code:
 
@@ -166,26 +177,43 @@ for HTTP-fetched pages.
 Two mechanisms actually change the agent's behavior over time from
 accumulated history, rather than just reacting within a single crawl:
 
+Both mechanisms require **explicit human approval** before anything they
+produce takes effect — discovery never registers a site on its own, and
+feedback never changes a live prompt on its own. Both are two-step: an
+automatic step that proposes a change, and a separate, human-gated step
+that deploys it.
+
 ### 1. Site discovery and self-correction (`crawler_agent/discovery/`)
 
-- **`crawler-agent revalidate-sites`** re-probes every registered site's seed
-  URL through the exact same fetch→assess→extract pipeline a real crawl
-  uses (`discovery/probe.py` wraps `agent/graph.py`'s `run_url`), and
-  self-corrects the registry if a seed stops yielding real items — either by
-  calling a site's declared dynamic resolver (see below) or by trying a
-  small set of generic fallback URL patterns and persisting whichever one
-  actually works (`sites/loader.update_site_seed_urls`).
 - **`crawler-agent discover-site --country CA`** onboards a country with no
   registered site yet: Claude suggests candidate gazette/register URLs
   (`discovery/candidate_suggester.py` — knowledge-sourcing, not web search,
   since no search tool is wired into the agent), every candidate is checked
   against a hard domain allowlist (`discovery/authentic_domains.py` — a
   candidate that isn't a real `.gov`/`.gov.uk`/`.europa.eu`-style domain is
-  never even fetched), and only a candidate that *actually* extracts real
-  content when fetched for real gets registered. Verified live: Canada
+  never even fetched), and a candidate that *actually* extracts real content
+  when fetched for real becomes a **pending `SiteProposal`**
+  (`discovery/proposals.py`) — not a registry write. Verified live: Canada
   Gazette candidates all passed the domain gate (they're real `.gc.ca`
   URLs) but every specific path 404'd — the tool correctly reported failure
-  and registered nothing, rather than guessing.
+  and proposed nothing, rather than guessing.
+- **`crawler-agent list-pending-sites`** shows what's awaiting a decision;
+  **`approve-site <id>`** is the only thing that ever calls
+  `sites/loader.append_site()` to actually register one; `reject-site <id>`
+  discards it. Both take an optional `--comment` recording *why* (the
+  dashboard's "Site Discovery" tab has a feedback box plus the same two
+  buttons). `crawler-agent list-site-decisions` — or the tab's "Recent
+  decisions" table — shows past approvals/denials with their comments, so
+  the reasoning behind a call isn't lost.
+- **`crawler-agent revalidate-sites`** re-probes every registered site's seed
+  URL through the exact same fetch→assess→extract pipeline a real crawl
+  uses (`discovery/probe.py` wraps `agent/graph.py`'s `run_url`), and
+  self-corrects the registry if a seed stops yielding real items — either by
+  calling a site's declared dynamic resolver (see below) or by trying a
+  small set of generic fallback URL patterns and persisting whichever one
+  actually works. This one *is* automatic, not approval-gated: it only ever
+  acts on a site a human already approved, correcting its URL rather than
+  proposing a wholly new site.
 - **Dynamic seed resolvers** (`discovery/resolver.py`): some sites' real
   content lives behind a hub page that changes daily (EU EUR-Lex's actual
   Official Journal issue is a dated URL, not its static index page). A site
@@ -201,15 +229,24 @@ accumulated history, rather than just reacting within a single crawl:
 
 In the dashboard's item detail view, rate a summary Helpful/Not helpful or
 submit a corrected rewrite. Feedback is stored (`db/models.py`'s
-`SummaryFeedback`) and `feedback/store.py`'s `recent_feedback_examples()`
+`SummaryFeedback`); `feedback/store.py`'s `recent_feedback_examples()`
 surfaces the most useful rows — ones with an explicit before/after
 correction, or a "not helpful" rating with a comment explaining what was
-wrong (a bare "helpful" has nothing to teach). Every
-crawl run (`cli.py`'s `crawl_cmd`) pulls these before building the
-extractor, and `extraction/prompts.py`'s `render_feedback_section()` splices
-them into the system prompt as worked examples — no fine-tuning, just
-in-context learning from accumulated corrections that persists across runs.
-`crawler-agent list-feedback` shows what's been recorded outside the
+wrong (a bare "helpful" has nothing to teach).
+
+Feedback does **not** reach real crawls automatically. `extraction/prompt_review.py`'s
+`build_prompt_draft()` computes what the system prompt *would* become with
+current feedback applied and holds it as a `PromptVersion` row with
+`status="draft"` — visible via `crawler-agent review-prompt` (prints a
+unified diff against what's actually deployed) or the dashboard's "Prompt
+Review" tab. Only `approve-prompt <id>` (or its dashboard button) marks it
+`"approved"`; `get_deployed_system_prompt()` — what `crawl_cmd` actually
+uses — only ever reads the latest *approved* version, falling back to the
+bare base prompt if nothing has ever been approved. `reject-prompt <id>`
+discards a draft, leaving the deployed prompt untouched. Both take an
+optional `--comment`; `crawler-agent list-prompt-decisions` — or the tab's
+"Recent decisions" table — shows past approvals/denials with their
+comments. `crawler-agent list-feedback` shows raw feedback outside the
 dashboard.
 
 **Honest limits of both**: candidate suggestion can still be wrong (the
@@ -218,7 +255,8 @@ empirical probe; generic fallback URL patterns in revalidation are
 best-effort heuristics observed on real sites in this project, not a
 guaranteed-general mechanism; and feedback-driven prompt changes are only as
 good as the model's ability to generalize from a handful of examples, not a
-trained improvement.
+trained improvement — approval gates who decides *whether* to deploy a
+change, not whether the change itself is well-judged.
 
 ## Tests
 

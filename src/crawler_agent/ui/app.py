@@ -9,6 +9,19 @@ from sqlalchemy import select
 from crawler_agent.change_detection.detector import upcoming_changes
 from crawler_agent.db.models import ChangeEvent, RegulationItem, Site, SummaryFeedback
 from crawler_agent.db.session import get_session
+from crawler_agent.discovery.proposals import (
+    approve_proposal,
+    list_pending_proposals,
+    list_reviewed_proposals,
+    reject_proposal,
+)
+from crawler_agent.extraction.prompt_review import (
+    approve_draft,
+    build_prompt_draft,
+    diff_against_deployed,
+    list_reviewed_drafts,
+    reject_draft,
+)
 from crawler_agent.feedback.store import record_feedback
 
 st.set_page_config(page_title="Regulatory Crawler Agent", layout="wide")
@@ -163,8 +176,24 @@ with st.sidebar:
 
 country_filter = None if selected_country == "All" else selected_country
 
-tab_overview, tab_upcoming, tab_items, tab_layouts, tab_events = st.tabs(
-    ["Overview", "Upcoming Changes", "All Regulation Items", "Layout History", "Change Log"]
+(
+    tab_overview,
+    tab_upcoming,
+    tab_items,
+    tab_layouts,
+    tab_events,
+    tab_discovery,
+    tab_prompt,
+) = st.tabs(
+    [
+        "Overview",
+        "Upcoming Changes",
+        "All Regulation Items",
+        "Layout History",
+        "Change Log",
+        "Site Discovery",
+        "Prompt Review",
+    ]
 )
 
 with tab_overview:
@@ -321,3 +350,127 @@ with tab_events:
     if not display_df.empty:
         display_df["details"] = display_df["details"].apply(json.dumps)
     st.dataframe(display_df, width="stretch", hide_index=True)
+
+with tab_discovery:
+    st.subheader("Site discovery -- pending approval")
+    st.caption(
+        "Candidates found by `crawler-agent discover-site` are never registered "
+        "automatically. Nothing below is live until you approve it."
+    )
+    with get_session() as proposal_session:
+        pending = list_pending_proposals(proposal_session)
+    if not pending:
+        st.info(
+            "No pending site proposals right now -- the approve/deny controls below "
+            "appear here only when there's something to review. Run "
+            "`crawler-agent discover-site --country <code>` to find a candidate."
+        )
+    else:
+        for proposal in pending:
+            with st.container(border=True):
+                st.markdown(f"**#{proposal.id} -- {proposal.name}**")
+                st.write(f"Country: {proposal.country}  |  Fetch mode: {proposal.fetch_mode}")
+                st.write(proposal.base_url)
+                comment = st.text_input(
+                    "Feedback (optional) -- why you're approving or denying this",
+                    key=f"comment_site_{proposal.id}",
+                )
+                col_approve, col_reject, _ = st.columns([1, 1, 4])
+                if col_approve.button("Approve & register", key=f"approve_site_{proposal.id}"):
+                    with get_session() as action_session:
+                        approve_proposal(action_session, proposal.id, comment=comment or None)
+                    st.cache_data.clear()
+                    st.success(f"Registered site '{proposal.slug}'.")
+                    st.rerun()
+                if col_reject.button("Deny", key=f"reject_site_{proposal.id}"):
+                    with get_session() as action_session:
+                        reject_proposal(action_session, proposal.id, comment=comment or None)
+                    st.success("Denied.")
+                    st.rerun()
+
+    st.markdown("##### Recent decisions")
+    with get_session() as history_session:
+        site_decisions = list_reviewed_proposals(history_session)
+    if not site_decisions:
+        st.caption("No site proposals have been reviewed yet.")
+    else:
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "id": p.id,
+                        "name": p.name,
+                        "decision": p.status,
+                        "reviewed_at": p.reviewed_at,
+                        "feedback": p.review_comment,
+                    }
+                    for p in site_decisions
+                ]
+            ),
+            width="stretch",
+            hide_index=True,
+            column_config={"feedback": st.column_config.TextColumn(width="large")},
+        )
+
+with tab_prompt:
+    st.subheader("Extraction prompt -- pending draft from user feedback")
+    st.caption(
+        "Accumulated summary feedback is never applied to real crawls until "
+        "the resulting prompt change is reviewed and approved here."
+    )
+    with get_session() as draft_session:
+        draft = build_prompt_draft(draft_session)
+        if draft is not None:
+            diff_text = diff_against_deployed(draft_session, draft)
+            draft_id = draft.id
+        else:
+            diff_text = None
+            draft_id = None
+
+    if draft_id is None:
+        st.info(
+            "No pending draft right now -- the approve/deny controls below appear "
+            "here only when feedback would actually change the prompt. Rate a "
+            "summary Helpful/Not helpful in 'All Regulation Items' to generate one."
+        )
+    else:
+        st.write(f"Draft #{draft_id}")
+        st.code(diff_text or "(no textual diff)", language="diff")
+        prompt_comment = st.text_input(
+            "Feedback (optional) -- why you're approving or denying this",
+            key=f"comment_prompt_{draft_id}",
+        )
+        col_approve, col_reject, _ = st.columns([1, 1, 4])
+        if col_approve.button("Approve & deploy", key=f"approve_prompt_{draft_id}"):
+            with get_session() as action_session:
+                approve_draft(action_session, draft_id, comment=prompt_comment or None)
+            st.success("Deployed -- future crawls will use this prompt.")
+            st.rerun()
+        if col_reject.button("Deny", key=f"reject_prompt_{draft_id}"):
+            with get_session() as action_session:
+                reject_draft(action_session, draft_id, comment=prompt_comment or None)
+            st.success("Denied -- deployed prompt is unchanged.")
+            st.rerun()
+
+    st.markdown("##### Recent decisions")
+    with get_session() as history_session:
+        prompt_decisions = list_reviewed_drafts(history_session)
+    if not prompt_decisions:
+        st.caption("No prompt drafts have been reviewed yet.")
+    else:
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "id": d.id,
+                        "decision": d.status,
+                        "reviewed_at": d.reviewed_at,
+                        "feedback": d.review_comment,
+                    }
+                    for d in prompt_decisions
+                ]
+            ),
+            width="stretch",
+            hide_index=True,
+            column_config={"feedback": st.column_config.TextColumn(width="large")},
+        )
