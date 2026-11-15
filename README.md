@@ -1,76 +1,84 @@
-# self-evolving-web-crawler-agent
+<div align="center">
 
-The self evolving web crawler agent automatically discovers websites, adapts to
-different country and regional domains, learns new page layouts, and extracts
-relevant information without manually coding each website.
+# 🕷️ Self-Evolving Web Crawler Agent
 
-It targets public, legitimate regulatory websites (US Federal Register, UK
-Legislation, EU EUR-Lex), uses Claude to extract structured regulatory items from
-each page, and uses structural diffing to detect when a site's page layout
-changes — which is what "self-evolving" means here: the agent notices and logs a
-"learned new layout" event instead of silently breaking. A LangGraph agent loop
-also notices when a site is serving a bot-mitigation page instead of real content
-(CAPTCHA, access-denied, JS-only shell) and reacts — escalating to a real browser
-fetch, or giving up and logging it as blocked — instead of quietly storing an
-empty crawl as if it succeeded. It also deduces upcoming regulatory changes
-(proposed rules, future effective dates) and stores everything in a local
-SQLite database.
+**An AI agent that discovers regulatory websites, learns new page layouts, and extracts structured data, without hand-coding each site.**
 
-Two things actually get smarter from accumulated history, not just reactive
-within a single run — see [Self-learning](#self-learning) below:
-1. The agent re-validates its own seed URLs, self-corrects when one stops
-   working, and can discover+register a new country's regulatory site.
-2. Human corrections to extracted summaries, given through the dashboard,
-   persist and measurably change future extractions.
+[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
+[![LangGraph](https://img.shields.io/badge/LangGraph-Agent_Loop-1C3C3C?style=for-the-badge&logo=langchain&logoColor=white)](https://langchain-ai.github.io/langgraph/)
+[![Claude](https://img.shields.io/badge/Claude-Extraction-D97757?style=for-the-badge&logo=anthropic&logoColor=white)](https://www.anthropic.com/)
+[![MCP](https://img.shields.io/badge/MCP-Server-000000?style=for-the-badge)](https://modelcontextprotocol.io)
+[![Streamlit](https://img.shields.io/badge/Streamlit-Dashboard-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white)](https://streamlit.io/)
+[![SQLite](https://img.shields.io/badge/SQLite-Storage-003B57?style=for-the-badge&logo=sqlite&logoColor=white)](https://www.sqlite.org/)
 
-## Setup
+[Quick Start](#-quick-start) · [How It Works](#-how-it-works) · [Self-Learning](#-self-learning) · [Dashboard](#-dashboard) · [MCP Server](#-mcp-server)
+
+</div>
+
+---
+
+## ✨ Overview
+
+Public regulatory sites (US Federal Register, UK Legislation, EU EUR-Lex) each look different, change often, and sometimes hide behind bot mitigation. This agent handles that without per-site code:
+
+- 🧭 **Discovers** websites and adapts to country and regional domains
+- 🧬 **Learns** new page layouts through structural DOM fingerprinting, and logs a *"learned new layout"* event instead of silently breaking
+- 🛡️ **Detects bot-mitigation pages** (CAPTCHA, access denied, JS-only shells) and escalates to a real browser, or gives up and logs the crawl as blocked
+- 🧠 **Extracts** structured regulation items with Claude (title, dates, status, summary)
+- 🔮 **Deduces upcoming changes** such as proposed rules and future effective dates
+- 💾 **Stores** everything in a local SQLite database
+
+> **What "self-evolving" means here:** the agent notices when something changes and reacts, instead of quietly storing an empty crawl as if it succeeded. It also gets smarter from accumulated history. See [Self-Learning](#-self-learning).
+
+---
+
+## 🚀 Quick Start
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev,browser,ui]"
-.venv/bin/crawl4ai-setup   # only needed for fetch_mode: browser -- installs its Playwright browser
-cp .env.example .env   # then set ANTHROPIC_API_KEY
+.venv/bin/crawl4ai-setup        # only for fetch_mode: browser (installs Playwright browser)
+cp .env.example .env            # then set ANTHROPIC_API_KEY
 ```
-
-## Usage
 
 ```bash
 .venv/bin/crawler-agent init-db
 .venv/bin/crawler-agent crawl --site us_federal_register
-.venv/bin/crawler-agent crawl --all
-.venv/bin/crawler-agent list-upcoming --country US
-.venv/bin/crawler-agent list-layout-events
-.venv/bin/crawler-agent revalidate-sites
-.venv/bin/crawler-agent discover-site --country CA
-.venv/bin/crawler-agent list-pending-sites
-.venv/bin/crawler-agent approve-site <id> --comment "looks legit"
-.venv/bin/crawler-agent reject-site <id> --comment "wrong country's gazette"
-.venv/bin/crawler-agent list-site-decisions
-.venv/bin/crawler-agent list-feedback
-.venv/bin/crawler-agent review-prompt
-.venv/bin/crawler-agent approve-prompt <id> --comment "good fix, deploying"
-.venv/bin/crawler-agent reject-prompt <id> --comment "too narrow, want more examples first"
-.venv/bin/crawler-agent list-prompt-decisions
+.venv/bin/crawler-agent ui      # open the dashboard
 ```
 
-### Dashboard
+<details>
+<summary><b>📋 Full CLI reference</b></summary>
 
-```bash
-.venv/bin/crawler-agent ui
-```
+<br>
 
-Opens a local Streamlit dashboard (`src/crawler_agent/ui/app.py`) at
-`http://localhost:8501` for browsing what's been crawled: an overview with
-counts per site, deduced upcoming changes, all tracked regulation items
-(filterable by country/site/status, with search), the layout-learning
-history, the full change-event log, a **Site Discovery** tab for
-approving/rejecting pending site proposals, and a **Prompt Review** tab for
-approving/rejecting the pending feedback-driven prompt draft (see
-[Self-learning](#self-learning)). It reads directly from the same SQLite
-database the CLI writes to — run a crawl, then refresh the dashboard (or
-click "Refresh data" in the sidebar) to see new results.
+| Area | Command | What it does |
+| --- | --- | --- |
+| **Setup** | `init-db` | Create the local SQLite database |
+| **Crawl** | `crawl --site <id>` / `crawl --all` | Crawl one site or every enabled site |
+| **Inspect** | `list-upcoming --country US` | Show deduced upcoming changes |
+| | `list-layout-events` | Show layout-learning history |
+| **Discovery** | `revalidate-sites` | Re-probe seed URLs and self-correct broken ones |
+| | `discover-site --country CA` | Propose a new country's regulatory site |
+| | `list-pending-sites` | See proposals awaiting a decision |
+| | `approve-site <id> --comment "..."` | Approve and register a proposed site |
+| | `reject-site <id> --comment "..."` | Discard a proposed site |
+| | `list-site-decisions` | Past approvals and rejections with reasons |
+| **Feedback** | `list-feedback` | Raw summary feedback |
+| | `review-prompt` | Diff of the draft prompt vs. the deployed one |
+| | `approve-prompt <id> --comment "..."` | Deploy the draft prompt |
+| | `reject-prompt <id> --comment "..."` | Discard the draft prompt |
+| | `list-prompt-decisions` | Past prompt approvals and rejections |
+| **Sites** | `add-site my_new_site.yaml` | Register a site from a YAML file |
+| **Tools** | `ui` | Launch the Streamlit dashboard |
+| | `mcp` | Start the MCP server |
 
-Add a new regulatory site without touching code:
+</details>
+
+<details>
+<summary><b>➕ Add a new site without touching code</b></summary>
+
+<br>
 
 ```bash
 .venv/bin/crawler-agent add-site my_new_site.yaml
@@ -88,201 +96,166 @@ fetch_mode: http   # or "browser" if the site requires real browser rendering
 crawl_interval_hours: 24
 ```
 
-## How it works
+</details>
 
-Each seed URL is run through a small LangGraph agent (`crawler_agent/agent/graph.py`)
-instead of a fixed fetch-then-extract pipeline:
+---
 
-1. **Fetch** — `crawler_agent/fetch/` polls the page via HTTP, or via
-   `BrowserFetcher` (Crawl4AI, which wraps Playwright) for JS-rendered or
-   bot-protected pages. `fetch/robots.py` uses `protego` (RFC 9309 compliant)
-   to honor `robots.txt` for both fetchers, and the HTTP fetcher rate-limits
-   per domain.
-2. **Assess** — `agent/assess.py` asks Claude whether the fetched content is
-   genuine regulatory content or a bot-mitigation page (CAPTCHA, access-denied,
-   empty JS shell). This step exists because real sites don't 404 when they
-   don't want to be scraped — they return a 200/202 that looks structurally
-   fine but carries no real data.
-3. **Escalate or give up** — if the page looks blocked and it was fetched with
-   a plain HTTP client, the agent retries with a real browser (bounded to one
-   retry). If it's still blocked, it logs an `access_blocked` change event and
-   moves on, rather than treating a block page as "zero items this crawl" or
-   (worse) as a newly learned layout.
-4. **Fingerprint** — `layout/fingerprint.py` computes a structural signature of
-   the page's DOM shape (tag/class skeleton, ignoring text), so a content
-   update doesn't look like a layout change but a real HTML restructure does.
-   `layout/diff.py` logs a `layout_relearned` event the first time a new
-   fingerprint appears for a site.
-5. **Extract** — `extraction/llm_extractor.py` sends the cleaned page text to
-   Claude with a forced structured-output tool call, extracting regulation
-   items (title, dates, status, summary).
-6. **Detect changes** — `change_detection/detector.py` classifies each
-   extracted item as new, updated, or unchanged versus what's stored, and
-   flags items with a future effective date or a `proposed`/`upcoming` status
-   as deduced upcoming changes.
-7. **Store** — everything lands in a local SQLite DB (`db/models.py`): sites,
-   layout versions, page snapshots, regulation items, and a change-event log.
+## 🧩 How It Works
 
-### Per-site fetch strategy (discovered by testing against the real sites)
+Each seed URL runs through a small **LangGraph** agent (`crawler_agent/agent/graph.py`) instead of a fixed fetch-then-extract pipeline.
 
-- **US Federal Register** — its `robots.txt` disallows the HTML `/documents/search`
-  listing pages, and its access-denied page explicitly tells automated tools to
-  use its public JSON API instead. The registry points at that sanctioned
-  `/api/v1/documents.json` endpoint — no key required, and it isn't disallowed.
-- **UK Legislation / EU EUR-Lex** — plain HTTP requests get an empty `202`
-  response from these sites' CDN-level bot mitigation; a real (headless)
-  browser renders the actual page, so both are configured with
-  `fetch_mode: browser`.
-- **EU EUR-Lex is currently `enabled: false`** (as of 2026-11-14) —
-  `eur-lex.europa.eu/robots.txt` now returns `User-agent: *` / `Disallow: /`,
-  a site-wide block of all automated access (even Googlebot). That's not a
-  narrow rule or a bot-check to escalate past; the operator has withdrawn
-  permission entirely, and this project never crawls past an explicit
-  `robots.txt` disallow, no exceptions. The config (seed URL, resolver) is
-  kept rather than deleted. `crawler-agent revalidate-sites` checks disabled
-  sites too and auto re-enables one the moment its probe succeeds again — so
-  if EUR-Lex's policy changes back, running it is enough to pick that up.
+```mermaid
+flowchart LR
+    A[🌐 Fetch<br/>HTTP or Browser] --> B{🔍 Assess<br/>Real content?}
+    B -- blocked + HTTP --> C[🖥️ Retry with<br/>real browser]
+    C --> B
+    B -- still blocked --> D[🚫 Log<br/>access_blocked]
+    B -- genuine --> E[🧬 Fingerprint<br/>layout]
+    E --> F[🧠 Extract<br/>with Claude]
+    F --> G[🔔 Detect<br/>changes]
+    G --> H[(💾 SQLite)]
+    E -. new layout .-> I[📝 Log<br/>layout_relearned]
+```
 
-### Content cleaning and markdown
+| # | Step | Module | What happens |
+| :-: | --- | --- | --- |
+| 1 | **Fetch** 🌐 | `fetch/` | Polls via HTTP, or via `BrowserFetcher` (Crawl4AI on Playwright) for JS-rendered or bot-protected pages. `robots.txt` is honored with `protego` (RFC 9309) for both fetchers, and HTTP is rate-limited per domain. |
+| 2 | **Assess** 🔍 | `agent/assess.py` | Claude judges whether the content is genuine or a bot-mitigation page. Real sites often return a 200/202 that looks fine but carries no data. |
+| 3 | **Escalate or give up** 🛡️ | `agent/graph.py` | A blocked HTTP fetch retries once with a real browser. If still blocked, an `access_blocked` event is logged and the crawl moves on. |
+| 4 | **Fingerprint** 🧬 | `layout/` | A structural signature of the DOM (tag/class skeleton, ignoring text), so content updates don't look like layout changes. A new fingerprint logs `layout_relearned`. |
+| 5 | **Extract** 🧠 | `extraction/llm_extractor.py` | Cleaned page text goes to Claude with a forced structured-output tool call, returning regulation items. |
+| 6 | **Detect changes** 🔔 | `change_detection/detector.py` | Items are classed as new, updated, or unchanged. Future effective dates and `proposed`/`upcoming` statuses become deduced upcoming changes. |
+| 7 | **Store** 💾 | `db/models.py` | Sites, layout versions, page snapshots, regulation items, and a change-event log. |
 
-`BrowserFetcher` uses Crawl4AI, which can optionally prune a page's HTML down
-to a dense-content-focused markdown before extraction. That pruning filter
-is a density heuristic, not currently enabled by default
-(`fetch/browser_fetcher.py`'s `select_markdown`, unused by default): tested
-against two real EUR-Lex pages, it correctly kept the real per-document rows
-on one (a daily-issue listing, where content is dense prose with one link
-each) but discarded them on the other (an index page, where the real content
-is sparse one-line links and the filter kept denser-but-irrelevant "about
-this site" prose instead). Enabling it for a given site needs verifying
-extraction quality on that site's actual pages, not assuming the ratio helps
-generally. Every browser-fetched page instead goes through
-`utils/html_clean.to_text()` by default — the same deterministic cleaner used
-for HTTP-fetched pages.
+### 🌍 Per-site fetch strategy
 
-### Known limitations
+*Discovered by testing against the real sites.*
 
-- LLM extraction is not perfectly deterministic in general. Change detection
-  (`change_detection/detector.py`) only hashes material fields (title, status,
-  dates, document type/number) — not free-text summary — and normalizes
-  trailing punctuation on titles, specifically so that harmless extraction
-  variance doesn't get logged as a false "updated" event. US Federal Register
-  and UK Legislation have been verified stable (zero false updates) across
-  repeated crawls; EU is now close (19/20 items stable on a real run) but one
-  ambiguous document type (a "Decision" entry with no clean machine-readable
-  status field, unlike the clearly-typed "Regulation" entries on the same
-  page) still occasionally flickers between `enacted`/`unknown`.
+| Site | Strategy |
+| --- | --- |
+| 🇺🇸 **US Federal Register** | `robots.txt` disallows the HTML search pages, and the access-denied page points automated tools to the public JSON API. The registry uses the sanctioned `/api/v1/documents.json` endpoint, with no key required. |
+| 🇬🇧 **UK Legislation** | CDN-level bot mitigation returns an empty `202` to plain HTTP. A headless browser renders the real page, so it uses `fetch_mode: browser`. |
+| 🇪🇺 **EU EUR-Lex** | **Currently `enabled: false`** (as of 2026-11-14). Its `robots.txt` now returns `User-agent: *` / `Disallow: /`, a site-wide block. This project never crawls past an explicit disallow. The config is kept, and `revalidate-sites` re-enables the site automatically if its probe succeeds again. |
 
-## Self-learning
+<details>
+<summary><b>🧹 Content cleaning and markdown</b></summary>
 
-Two mechanisms actually change the agent's behavior over time from
-accumulated history, rather than just reacting within a single crawl:
+<br>
 
-Both mechanisms require **explicit human approval** before anything they
-produce takes effect — discovery never registers a site on its own, and
-feedback never changes a live prompt on its own. Both are two-step: an
-automatic step that proposes a change, and a separate, human-gated step
-that deploys it.
+`BrowserFetcher` uses Crawl4AI, which can optionally prune a page's HTML down to dense-content markdown before extraction. That filter is a density heuristic and is **not enabled by default** (`select_markdown` in `fetch/browser_fetcher.py`). Tested on two real EUR-Lex pages, it kept the real rows on a daily-issue listing but discarded them on an index page, keeping denser but irrelevant "about this site" prose instead. Enabling it for a site needs extraction-quality verification on that site's actual pages.
 
-### 1. Site discovery and self-correction (`crawler_agent/discovery/`)
+By default, every browser-fetched page goes through `utils/html_clean.to_text()`, the same deterministic cleaner used for HTTP-fetched pages.
 
-- **`crawler-agent discover-site --country CA`** onboards a country with no
-  registered site yet: Claude suggests candidate gazette/register URLs
-  (`discovery/candidate_suggester.py` — knowledge-sourcing, not web search,
-  since no search tool is wired into the agent), every candidate is checked
-  against a hard domain allowlist (`discovery/authentic_domains.py` — a
-  candidate that isn't a real `.gov`/`.gov.uk`/`.europa.eu`-style domain is
-  never even fetched), and a candidate that *actually* extracts real content
-  when fetched for real becomes a **pending `SiteProposal`**
-  (`discovery/proposals.py`) — not a registry write. Verified live: Canada
-  Gazette candidates all passed the domain gate (they're real `.gc.ca`
-  URLs) but every specific path 404'd — the tool correctly reported failure
-  and proposed nothing, rather than guessing.
-- **`crawler-agent list-pending-sites`** shows what's awaiting a decision;
-  **`approve-site <id>`** is the only thing that ever calls
-  `sites/loader.append_site()` to actually register one; `reject-site <id>`
-  discards it. Both take an optional `--comment` recording *why* (the
-  dashboard's "Site Discovery" tab has a feedback box plus the same two
-  buttons). `crawler-agent list-site-decisions` — or the tab's "Recent
-  decisions" table — shows past approvals/denials with their comments, so
-  the reasoning behind a call isn't lost.
-- **`crawler-agent revalidate-sites`** re-probes every registered site's seed
-  URL through the exact same fetch→assess→extract pipeline a real crawl
-  uses (`discovery/probe.py` wraps `agent/graph.py`'s `run_url`), and
-  self-corrects the registry if a seed stops yielding real items — either by
-  calling a site's declared dynamic resolver (see below) or by trying a
-  small set of generic fallback URL patterns and persisting whichever one
-  actually works. This one *is* automatic, not approval-gated: it only ever
-  acts on a site a human already approved, correcting its URL rather than
-  proposing a wholly new site.
-- **Dynamic seed resolvers** (`discovery/resolver.py`): some sites' real
-  content lives behind a hub page that changes daily (EU EUR-Lex's actual
-  Official Journal issue is a dated URL, not its static index page). A site
-  can declare `seed_resolver: eurlex_latest_oj` in the registry instead of a
-  fixed seed URL; `pipeline/run.py` calls the resolver fresh on every crawl.
-  This is what fixed EU's extraction quality (4 ambiguous items from the
-  index page → 20 real items from the actual daily issue) — before EUR-Lex's
-  `robots.txt` later changed to block all automated access entirely (see
-  "Per-site fetch strategy" above); the resolver and its logic are kept
-  as-is for if/when that changes back.
+</details>
 
-### 2. Summaries that improve from user feedback (`crawler_agent/feedback/`)
+<details>
+<summary><b>⚠️ Known limitations</b></summary>
 
-In the dashboard's item detail view, rate a summary Helpful/Not helpful or
-submit a corrected rewrite. Feedback is stored (`db/models.py`'s
-`SummaryFeedback`); `feedback/store.py`'s `recent_feedback_examples()`
-surfaces the most useful rows — ones with an explicit before/after
-correction, or a "not helpful" rating with a comment explaining what was
-wrong (a bare "helpful" has nothing to teach).
+<br>
 
-Feedback does **not** reach real crawls automatically. `extraction/prompt_review.py`'s
-`build_prompt_draft()` computes what the system prompt *would* become with
-current feedback applied and holds it as a `PromptVersion` row with
-`status="draft"` — visible via `crawler-agent review-prompt` (prints a
-unified diff against what's actually deployed) or the dashboard's "Prompt
-Review" tab. Only `approve-prompt <id>` (or its dashboard button) marks it
-`"approved"`; `get_deployed_system_prompt()` — what `crawl_cmd` actually
-uses — only ever reads the latest *approved* version, falling back to the
-bare base prompt if nothing has ever been approved. `reject-prompt <id>`
-discards a draft, leaving the deployed prompt untouched. Both take an
-optional `--comment`; `crawler-agent list-prompt-decisions` — or the tab's
-"Recent decisions" table — shows past approvals/denials with their
-comments. `crawler-agent list-feedback` shows raw feedback outside the
-dashboard.
+LLM extraction is not perfectly deterministic. Change detection hashes only material fields (title, status, dates, document type/number), not the free-text summary, and normalizes trailing punctuation on titles, so harmless variance isn't logged as a false "updated" event.
 
-**Honest limits of both**: candidate suggestion can still be wrong (the
-Canada example above), so discovery never trusts a suggestion without an
-empirical probe; generic fallback URL patterns in revalidation are
-best-effort heuristics observed on real sites in this project, not a
-guaranteed-general mechanism; and feedback-driven prompt changes are only as
-good as the model's ability to generalize from a handful of examples, not a
-trained improvement — approval gates who decides *whether* to deploy a
-change, not whether the change itself is well-judged.
+- ✅ US Federal Register and UK Legislation: verified stable (zero false updates) across repeated crawls
+- 🟡 EU: close (19/20 items stable on a real run). One ambiguous "Decision" entry with no clean machine-readable status still occasionally flickers between `enacted` and `unknown`.
 
-## MCP server
+</details>
+
+---
+
+## 🧠 Self-Learning
+
+Two mechanisms change the agent's behavior over time from accumulated history, not just within a single crawl.
+
+> 🔐 **Human approval is always required.** Both mechanisms are two-step: an automatic step *proposes* a change, and a separate human-gated step *deploys* it. Discovery never registers a site on its own, and feedback never changes a live prompt on its own.
+
+### 1️⃣ Site discovery and self-correction
+
+`crawler_agent/discovery/`
+
+| Command | Behavior |
+| --- | --- |
+| `discover-site --country CA` | Claude suggests candidate gazette URLs (`candidate_suggester.py`, knowledge-sourced, no web search). Each is checked against a **hard domain allowlist** (`authentic_domains.py`), so non-`.gov`-style domains are never even fetched. A candidate that extracts real content becomes a **pending `SiteProposal`**, not a registry write. |
+| `list-pending-sites` | Shows proposals awaiting a decision. |
+| `approve-site <id>` | The **only** path that calls `sites/loader.append_site()` to register a site. |
+| `reject-site <id>` | Discards the proposal. Both take `--comment`. |
+| `revalidate-sites` | Re-probes every registered seed URL through the real fetch → assess → extract pipeline and self-corrects broken ones, via a site's dynamic resolver or generic fallback URL patterns. Automatic, but only acts on sites a human already approved. |
+
+> ✅ **Verified live:** Canada Gazette candidates all passed the domain gate, but every specific path returned 404. The tool reported failure and proposed nothing, instead of guessing.
+
+**Dynamic seed resolvers** (`discovery/resolver.py`): some sites keep real content behind a hub page that changes daily. A site can declare `seed_resolver: eurlex_latest_oj` instead of a fixed URL, and `pipeline/run.py` resolves it fresh on every crawl. That took EU extraction from 4 ambiguous items to 20 real ones, before EUR-Lex's `robots.txt` later blocked all automated access. The resolver is kept as-is in case that changes back.
+
+### 2️⃣ Summaries that improve from user feedback
+
+`crawler_agent/feedback/`
+
+```mermaid
+flowchart LR
+    A[👤 Rate or correct<br/>a summary] --> B[(SummaryFeedback)]
+    B --> C[📝 build_prompt_draft<br/>status=draft]
+    C --> D{🧑‍⚖️ Human review<br/>diff vs deployed}
+    D -- approve-prompt --> E[✅ Deployed prompt]
+    D -- reject-prompt --> F[❌ Discarded]
+    E --> G[🕷️ Future crawls]
+```
+
+- In the dashboard's item view, rate a summary **Helpful / Not helpful** or submit a corrected rewrite.
+- `recent_feedback_examples()` surfaces the most useful rows: explicit before/after corrections, or "not helpful" ratings with a comment.
+- `build_prompt_draft()` computes what the system prompt *would* become and holds it as a `PromptVersion` with `status="draft"`. View it with `review-prompt` (a unified diff) or the dashboard's **Prompt Review** tab.
+- Only `approve-prompt <id>` marks it `approved`. `get_deployed_system_prompt()`, which real crawls use, reads only the latest *approved* version and falls back to the base prompt otherwise.
+
+> **Honest limits of both:** candidate suggestion can still be wrong, so discovery never trusts a suggestion without an empirical probe. Fallback URL patterns are best-effort heuristics observed on real sites. Feedback-driven prompt changes are only as good as the model's ability to generalize from a handful of examples. Approval gates *whether* to deploy a change, not whether the change is well-judged.
+
+---
+
+## 📊 Dashboard
+
+```bash
+.venv/bin/crawler-agent ui
+```
+
+A local **Streamlit** dashboard (`src/crawler_agent/ui/app.py`) at `http://localhost:8501`, reading directly from the same SQLite database the CLI writes to.
+
+| Tab | Shows |
+| --- | --- |
+| 🏠 **Overview** | Counts per site |
+| 🔮 **Upcoming changes** | Deduced proposed rules and future effective dates |
+| 📚 **Regulation items** | All tracked items, filterable by country, site, and status, with search |
+| 🧬 **Layout history** | Layout-learning events |
+| 📜 **Change log** | The full change-event log |
+| 🌍 **Site Discovery** | Approve or reject pending site proposals |
+| ✍️ **Prompt Review** | Approve or reject the pending feedback-driven prompt draft |
+
+Run a crawl, then click **Refresh data** in the sidebar to see new results.
+
+---
+
+## 🔌 MCP Server
 
 ```bash
 .venv/bin/pip install -e ".[mcp]"
 .venv/bin/crawler-agent mcp
 ```
 
-Exposes the crawled data over [MCP](https://modelcontextprotocol.io) (stdio
-transport) so any MCP client -- Claude Desktop, Claude Code, another agent --
-can query it directly, without opening the dashboard or the CLI.
-`src/crawler_agent/mcp_server.py` defines six tools, each a thin wrapper
-around an already-existing query path (the same ones the CLI/dashboard use):
-`list_regulation_items` (filter by country/site/status/title search),
-`get_regulation_item`, `list_upcoming_changes`, `list_sites`,
-`list_layout_events`, `list_change_events`.
+Exposes the crawled data over [MCP](https://modelcontextprotocol.io) (stdio), so any client, such as Claude Desktop, Claude Code, or another agent, can query it directly. `src/crawler_agent/mcp_server.py` defines six tools:
 
-**Read-only, deliberately.** This server has no write/approval tool --
-`discover-site`, `approve-site`/`reject-site`, and `approve-prompt`/
-`reject-prompt` are not reachable through it. Those are the
-human-approval-gated governance actions from the previous section; exposing
-them here would let any connected MCP client bypass the exact gate they
-exist to enforce. "Share regulatory information" means read access to the
-data, not a backdoor around who gets to decide what the agent does next.
+| Tool | Purpose |
+| --- | --- |
+| `list_regulation_items` | Filter by country, site, status, or title search |
+| `get_regulation_item` | Fetch one item |
+| `list_upcoming_changes` | Deduced upcoming changes |
+| `list_sites` | Registered sites |
+| `list_layout_events` | Layout-learning history |
+| `list_change_events` | Change-event log |
 
-To use it from Claude Desktop, add to `claude_desktop_config.json`:
+> 🔒 **Read-only, deliberately.** There is no write or approval tool. `discover-site`, `approve-site`/`reject-site`, and `approve-prompt`/`reject-prompt` are not reachable through MCP. Exposing them would let any connected client bypass the human-approval gate they exist to enforce.
+
+<details>
+<summary><b>🖥️ Claude Desktop config</b></summary>
+
+<br>
+
+Add to `claude_desktop_config.json`:
+
 ```json
 {
   "mcpServers": {
@@ -294,12 +267,22 @@ To use it from Claude Desktop, add to `claude_desktop_config.json`:
 }
 ```
 
-## Tests
+</details>
+
+---
+
+## 🧪 Tests
 
 ```bash
 .venv/bin/pytest
 ```
 
-Fingerprinting, change-detection, and the agent's fetch/assess/escalate routing
-are all tested with local fixtures and fakes — no network or LLM calls
-required.
+Fingerprinting, change detection, and the agent's fetch/assess/escalate routing are tested with local fixtures and fakes, so **no network or LLM calls are required**.
+
+---
+
+<div align="center">
+
+Built with 🐍 Python, 🦜 LangGraph, and 🤖 Claude
+
+</div>
