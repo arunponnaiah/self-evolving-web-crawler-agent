@@ -258,6 +258,42 @@ good as the model's ability to generalize from a handful of examples, not a
 trained improvement — approval gates who decides *whether* to deploy a
 change, not whether the change itself is well-judged.
 
+## MCP server
+
+```bash
+.venv/bin/pip install -e ".[mcp]"
+.venv/bin/crawler-agent mcp
+```
+
+Exposes the crawled data over [MCP](https://modelcontextprotocol.io) (stdio
+transport) so any MCP client -- Claude Desktop, Claude Code, another agent --
+can query it directly, without opening the dashboard or the CLI.
+`src/crawler_agent/mcp_server.py` defines six tools, each a thin wrapper
+around an already-existing query path (the same ones the CLI/dashboard use):
+`list_regulation_items` (filter by country/site/status/title search),
+`get_regulation_item`, `list_upcoming_changes`, `list_sites`,
+`list_layout_events`, `list_change_events`.
+
+**Read-only, deliberately.** This server has no write/approval tool --
+`discover-site`, `approve-site`/`reject-site`, and `approve-prompt`/
+`reject-prompt` are not reachable through it. Those are the
+human-approval-gated governance actions from the previous section; exposing
+them here would let any connected MCP client bypass the exact gate they
+exist to enforce. "Share regulatory information" means read access to the
+data, not a backdoor around who gets to decide what the agent does next.
+
+To use it from Claude Desktop, add to `claude_desktop_config.json`:
+```json
+{
+  "mcpServers": {
+    "regulatory-crawler": {
+      "command": "/absolute/path/to/.venv/bin/crawler-agent",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
 ## Tests
 
 ```bash

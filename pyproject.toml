@@ -23,6 +23,7 @@ dependencies = [
 browser = ["crawl4ai>=0.7"]
 dev = ["pytest>=8.0"]
 ui = ["streamlit>=1.38", "pandas>=2.0"]
+mcp = ["mcp>=2.0"]
 
 [project.scripts]
 crawler-agent = "crawler_agent.cli:app"

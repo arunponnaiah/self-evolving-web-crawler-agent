@@ -346,5 +346,24 @@ def ui_cmd(
         raise typer.Exit(1) from exc
 
 
+@app.command("mcp")
+def mcp_cmd() -> None:
+    """Launch the MCP server (stdio) exposing read-only access to regulation
+    items, upcoming changes, and crawl history. No write/approval action is
+    reachable through this server -- site discovery and prompt approval
+    stay gated behind the CLI/dashboard. Point an MCP client's config at
+    this command, e.g. {"command": "crawler-agent", "args": ["mcp"]}."""
+    init_db()
+    try:
+        from crawler_agent import mcp_server
+    except ImportError:
+        typer.echo(
+            "the 'mcp' package is not installed; install the 'mcp' extra: pip install -e '.[mcp]'",
+            err=True,
+        )
+        raise typer.Exit(1)
+    mcp_server.main()
+
+
 if __name__ == "__main__":
     app()
